@@ -5,6 +5,7 @@ name = "pypi"
 
 [packages]
 unitree-sdk2py = {file = ".", editable = true}
+dotenv = "*"
 
 [dev-packages]
 
