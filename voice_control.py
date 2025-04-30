@@ -1,10 +1,5 @@
-import asyncio
+import assemblyai as aai
 import sounddevice as sd
-import websockets
-import json
-import base64
-import openai
-import time
 import sys
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
@@ -13,11 +8,8 @@ import os
 
 dotenv.load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-SAMPLE_RATE = 16000 
-CHUNK_DURATION_MS = 250
-CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
+# Configure AssemblyAI API key
+aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
 class RobotController:
     def __init__(self, interface):
@@ -48,42 +40,24 @@ class RobotController:
             print("Standing up...")
             self.loco.StandUp()
 
+def on_open(session_opened: aai.RealtimeSessionOpened):
+    print("Session ID:", session_opened.session_id)
 
-def audio_stream_generator():
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='int16') as stream:
-        while True:
-            audio_chunk, _ = stream.read(CHUNK_SIZE)
-            yield audio_chunk.tobytes()
+def on_data(transcript: aai.RealtimeTranscript, robot):
+    if not transcript.text:
+        return
+    
+    if isinstance(transcript, aai.RealtimeFinalTranscript):
+        print(f"Final transcript: {transcript.text}")
+        robot.execute_command(transcript.text)
+    else:
+        print(f"Partial: {transcript.text}", end="\r")
 
+def on_error(error: aai.RealtimeError):
+    print("An error occurred:", error)
 
-async def transcribe(robot):
-    url = f"wss://api.openai.com/v1/audio/transcriptions/stream?language=en"
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}"
-    }
-
-    async with websockets.connect(url, extra_headers=headers) as ws:
-
-
-        async def send_audio():
-            for chunk in audio_stream_generator():
-                payload = {
-                    "audio": base64.b64encode(chunk).decode("utf-8"),
-                    "format": "pcm",
-                    "sample_rate": SAMPLE_RATE,
-                }
-                await ws.send(json.dumps(payload))
-                await asyncio.sleep(CHUNK_DURATION_MS / 1000)
-
-
-        async def receive_text():
-            async for message in ws:
-                data = json.loads(message)
-                if "text" in data and data["text"].strip():
-                    print(f"Transcription: {data['text']}")
-                    robot.execute_command(data["text"])
-
-        await asyncio.gather(send_audio(), receive_text())
+def on_close():
+    print("Closing Session")
 
 def main():
     if len(sys.argv) < 2:
@@ -92,7 +66,24 @@ def main():
 
     interface = sys.argv[1]
     robot = RobotController(interface)
-    asyncio.run(transcribe(robot))
+
+
+    transcriber = aai.RealtimeTranscriber(
+        sample_rate=16_000,
+        on_data=lambda transcript: on_data(transcript, robot),
+        on_error=on_error,
+        on_open=on_open,
+        on_close=on_close,
+    )
+
+
+    transcriber.connect()
+
+    microphone_stream = aai.extras.MicrophoneStream(sample_rate=16_000)
+    transcriber.stream(microphone_stream)
+
+
+    transcriber.close()
 
 if __name__ == "__main__":
     main() 
